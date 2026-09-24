@@ -1,0 +1,15 @@
+
+function Nstar = Nstar_of_l(c, w, l, D, Rstar, kappa)
+% NSTAR_OF_L  Equilibrium species abundances given Rstar (from
+% Rstar_of_l.m), holding consumption c, energy values w, leakage l,
+% the metabolic matrix D, and external supply kappa FIXED. This
+% follows from the resource-balance equations:
+%   kappa_alpha = Rstar_alpha*sum_i c(i,alpha)Nstar_i - sum_{i,beta} l_beta c(i,beta) D(alpha,beta)(w_beta/w_alpha) Nstar_i Rstar_beta
+% i.e. B*Nstar = kappa, where B(alpha,i) = Rstar_alpha*c(i,alpha) - T(alpha,i)
+% Requires N_S = N_R (square) for an exact solve.
+    weighted = c .* (l.*w.*Rstar');   % (NS x NR)
+    T = (D * weighted') ./ w';        % (NR x NS): T(alpha,i)
+    B = Rstar.*c' - T;                % (NR x NS)
+    Nstar = B \ kappa;
+end
+ 
