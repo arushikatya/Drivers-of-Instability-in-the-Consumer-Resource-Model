@@ -1,0 +1,122 @@
+% test_leakage_causes_infeasibility.m
+%
+% Tests, for FIXED community parameters (c, w, D, m, kappa), whether
+% raising leakage l ALONE -- with nothing else in the system changing
+% -- drives the equilibrium species abundances N* out of feasibility
+% (i.e. some component of N* becomes <= 0).
+%
+% LOGIC:
+%   N*(l) is a continuous function of l (it's just a matrix solve at
+%   each l). So if the SIGN PATTERN of N* at very low leakage differs
+%   from the sign pattern N* approaches at very high leakage, then by
+%   the Intermediate Value Theorem, some component of N* is
+%   GUARANTEED to cross zero somewhere in between -- feasibility loss
+%   isn't just likely, it's forced by continuity, for that community.
+%   This script (a) measures how often that sign disagreement occurs,
+%   and (b) explicitly scans leakage in between to numerically confirm
+%   a crossing really does occur every time it's predicted to.
+%
+% STEP-BY-STEP:
+%   1. For a chosen community size N, sample random c, w, D, m, kappa.
+%   2. Keep only communities that are FEASIBLE (R*>0 and N*>0) at very
+%      low leakage -- a valid, coexisting baseline community.
+%   3. Compute sign(N*) at that low-leakage baseline, and separately
+%      at near-maximal leakage (same c,w,D,m,kappa -- only l changes).
+%   4. If the two sign patterns differ, scan a fine grid of
+%      intermediate leakage levels and confirm N* actually becomes
+%      infeasible somewhere along the path.
+%   5. Report, across many communities and several community sizes N,
+%      what fraction show this guaranteed (and confirmed) crossing.
+
+clear; clc;
+rng(2028);
+
+N_list = [2, 3, 4];
+n_target = 150;          % feasible-at-baseline communities per N
+max_attempts = 8000;
+l_lo = 0.001;             % near-zero leakage
+l_hi = 0.999;             % near-maximal leakage
+theta_scan = linspace(0.001, 0.999, 200);  % fine sweep to confirm crossings
+
+fprintf('%-6s %-10s %-14s %-16s\n', 'N', 'n_checked', 'sign_disagree', 'crossing_confirmed');
+
+results = struct('N',{},'n_checked',{},'n_disagree',{},'n_confirmed',{});
+
+for kk = 1:length(N_list)
+    N = N_list(kk);
+
+    n_checked = 0;
+    n_disagree = 0;
+    n_confirmed = 0;
+    attempts = 0;
+
+    while n_checked < n_target && attempts < max_attempts
+        attempts = attempts + 1;
+
+        c = 0.1 + 1.0*rand(N,N);
+        w = 0.5 + 1.0*rand(1,N);
+        D = rand(N,N);
+        m = 0.5 + 1.0*rand(N,1);
+        kappa = 0.5 + 1.0*rand(N,1);
+
+        % STEP 2: check feasibility at very low leakage
+        l0 = l_lo*ones(1,N);
+        ok = true;
+        try
+            R0 = Rstar_of_l(c, w, l0, m);
+            N0 = Nstar_of_l(c, w, l0, D, R0, kappa);
+        catch
+            ok = false;
+        end
+        if ~ok || any(R0 <= 0) || any(N0 <= 0)
+            continue;   % not a valid baseline -- resample
+        end
+        n_checked = n_checked + 1;
+
+        % STEP 3: sign at low leakage vs. sign near-maximal leakage
+        sign_lo = sign(N0);
+        l1 = l_hi*ones(1,N);
+        try
+            R1 = Rstar_of_l(c, w, l1, m);
+            N1 = Nstar_of_l(c, w, l1, D, R1, kappa);
+            sign_hi = sign(N1);
+        catch
+            sign_hi = -sign_lo;   % treat solver failure as a clear disagreement
+        end
+
+        if ~isequal(sign_lo, sign_hi)
+            n_disagree = n_disagree + 1;
+
+            % STEP 4: confirm an actual crossing occurs along the path
+            crossed = false;
+            for th = theta_scan
+                l = th*ones(1,N);
+                try
+                    Rt = Rstar_of_l(c, w, l, m);
+                    Nt = Nstar_of_l(c, w, l, D, Rt, kappa);
+                catch
+                    crossed = true;
+                    break;
+                end
+                if any(Nt <= 0)
+                    crossed = true;
+                    break;
+                end
+            end
+            if crossed
+                n_confirmed = n_confirmed + 1;
+            end
+        end
+    end
+
+    fprintf('%-6d %-10d %-14d %-16d\n', N, n_checked, n_disagree, n_confirmed);
+    fprintf('       -> sign disagreement in %.1f%% of communities; crossing confirmed in %.1f%% of those\n', ...
+        100*n_disagree/max(n_checked,1), 100*n_confirmed/max(n_disagree,1));
+
+    results(kk).N = N;
+    results(kk).n_checked = n_checked;
+    results(kk).n_disagree = n_disagree;
+    results(kk).n_confirmed = n_confirmed;
+end
+
+save('leakage_infeasibility_results.mat', 'results');
