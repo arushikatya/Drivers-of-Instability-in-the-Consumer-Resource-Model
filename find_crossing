@@ -1,0 +1,12 @@
+function cross = find_crossing(xs, ys, level)
+% FIND_CROSSING  Linear-interpolation estimate of the x value where a
+% (roughly monotonic) curve ys(xs) first crosses the given level.
+% Returns NaN if no crossing is found.
+    cross = NaN;
+    for i = 1:(length(xs)-1)
+        if (ys(i)-level)*(ys(i+1)-level) < 0
+            cross = xs(i) + (level-ys(i))*(xs(i+1)-xs(i))/(ys(i+1)-ys(i));
+            return;
+        end
+    end
+end
