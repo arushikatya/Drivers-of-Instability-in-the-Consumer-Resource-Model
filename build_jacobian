@@ -1,0 +1,34 @@
+function J = build_jacobian(c, l, w, D, Nstar, Rstar)
+% BUILD_JACOBIAN  Full (NS+NR)x(NS+NR) Jacobian of the consumer-
+% resource model at the coexistence equilibrium (Nstar, Rstar), for
+% general numbers of species (NS) and resources (NR).
+%
+%   Species-species block   : zero (growth never depends on other
+%                              species directly)
+%   Species-resource block  : J(i,NS+alpha) = Nstar_i*(1-l_alpha)*c(i,alpha)*w_alpha
+%   Resource-species block  : J(NS+alpha,i) = -Rstar_alpha*c(i,alpha) + T(alpha,i)
+%   Resource-resource block : off-diagonal = l_gamma*D(alpha,gamma)*(w_gamma/w_alpha)*csum(gamma)
+%                              diagonal    = -csum(alpha) + l_alpha*D(alpha,alpha)*csum(alpha)
+
+    NS = length(Nstar);
+    NR = length(Rstar);
+    J = zeros(NS+NR, NS+NR);
+
+    % Species-resource block
+    J(1:NS, NS+1:end) = (Nstar) .* ((1-l).*w) .* c;
+
+    % T(alpha,i) = sum_beta l_beta c(i,beta) D(alpha,beta) (w_beta/w_alpha) Rstar_beta
+    weighted = c .* (l.*w.*Rstar');          % (NS x NR)
+    T = (D * weighted') ./ w';               % (NR x NS)
+
+    % Resource-species block
+    J(NS+1:end, 1:NS) = -Rstar.*c' + T;
+
+    % Resource-resource block
+    csum = c' * Nstar;                       % (NR x 1): csum(gamma) = sum_i c(i,gamma)*Nstar_i
+    RR = (l .* D .* (w./w')) .* csum';       % off-diagonal formula applied everywhere first
+                                              % (l broadcasts per-COLUMN here, giving l_gamma*D(alpha,gamma) -- NOT l', which would give l_alpha)
+    diag_vals = -csum + (l'.*diag(D)).*csum; % correct the diagonal entries
+    RR(1:NR+1:end) = diag_vals;
+    J(NS+1:end, NS+1:end) = RR;
+end
