@@ -1,0 +1,13 @@
+function Rstar = Rstar_of_l(c, w, l, m)
+% RSTAR_OF_L  Equilibrium resource concentrations as a function of
+% leakage l, holding consumption c, energy values w, and mortality m
+% FIXED. This follows purely from the growth equations (zero-growth
+% condition for every coexisting species) and does NOT depend on
+% kappa, D, or N* at all:
+%   sum_alpha (1-l_alpha) c(i,alpha) w_alpha R_alpha* = m_i   for every species i
+% i.e. A(l) * Rstar = m, where A(l)(i,alpha) = c(i,alpha)*(1-l_alpha)*w_alpha
+% Requires N_S = N_R (square) for an exact solve.
+    A = c .* ((1-l).*w);
+    Rstar = A \ m;
+end
+ 
