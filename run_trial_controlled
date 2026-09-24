@@ -1,0 +1,43 @@
+function [rho, stable] = run_trial_controlled(NS, NR, theta)
+% RUN_TRIAL_CONTROLLED  One trial at a CONTROLLED decorrelation level
+% theta in [0,1]. theta=0 targets Ceff = C exactly (whatever baseline
+% correlation that has with G); theta=1 targets Ceff = pure noise,
+% uncorrelated with G. Sweeping theta densely, instead of leaving rho
+% to fall out of fully-random sampling, is what lets every (N_S,N_R)
+% configuration get even, controlled coverage across the rho axis --
+% the same strategy Liu et al. use in their own paper (they construct
+% G and C with a prescribed correlation rather than measuring
+% whatever correlation independent random matrices happen to have).
+
+    % STEP 1: sample the "base" parameters (everything except D, which
+    % will be SOLVED FOR below rather than sampled)
+    c = 0.1 + 1.0*rand(NS,NR);
+    w = 0.5 + 1.0*rand(1,NR);
+    l = 0.1 + 0.8*rand(1,NR);
+    Rstar = 0.5 + 1.0*rand(NR,1);
+    Nstar = 0.5 + 1.0*rand(NS,1);
+
+    % STEP 2: build G and a target for Ceff that interpolates between
+    % C itself (theta=0) and independent random noise (theta=1)
+    G = c .* ((1-l).*w);
+    E = 0.1 + 1.0*rand(NS,NR);                  % independent noise, same scale as c
+    Ceff_target = (1-theta)*c + theta*E;
+
+    % STEP 3: solve for the D that makes the model's actual recycling
+    % term realize that target (least squares -- may not be exact)
+    D = solve_D_for_target(c, w, l, Rstar, Ceff_target);
+    D = max(D, 0);   % keep D non-negative (a metabolic conversion
+                      % fraction can't be negative); this means the
+                      % ACTUAL resulting rho may drift a bit from the
+                      % naive theta target, which is fine -- we always
+                      % measure and use the actual rho, never assume it
+
+    % STEP 4: recompute the ACTUAL G and Ceff with this (possibly
+    % clipped) D, and measure the actual rho -- never trust the target
+    [G, Ceff] = G_and_Ceff(c, w, l, D, Rstar);
+    rho = corr_flat(G, Ceff);
+
+    % STEP 5: build the Jacobian with this same D and check stability
+    J = build_jacobian(c, l, w, D, Nstar, Rstar);
+    stable = all(real(eig(J)) < 0);
+end
