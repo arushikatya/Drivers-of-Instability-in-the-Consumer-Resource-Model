@@ -1,0 +1,285 @@
+clear all; close all; clc;
+%% System Constraints
+N_sp = 2; R_res = 2;
+delta = 0.20;
+n_trials = 1000;
+param_names = {'C(1,1)', 'C(1,2)', 'C(2,1)', 'C(2,2)', ...
+'W(1)', 'W(2)', ...
+'l(1)', 'l(2)', ...
+'D(1,1)', 'D(1,2)', 'D(2,1)', 'D(2,2)', ...
+'m(1)', 'm(2)', ...
+'S(1)', 'S(2)'};
+n_params = length(param_names);
+scenarios(1).name = 'High Leakage [0.6, 0.9]';
+scenarios(1).l_low = 0.6;
+scenarios(1).l_high = 0.9;
+scenarios(2).name = 'Low Leakage [0.1, 0.3]';
+scenarios(2).l_low = 0.1;
+scenarios(2).l_high = 0.3;
+all_flips = zeros(n_params, 2);
+% Storage for eigenvalue-flip correlation analysis
+% For each scenario: store (lambda_max, flipped?) pairs per trial
+eig_data = cell(2, 1);
+for s = 1:2
+eig_data{s}.lambda_max = []; % lambda_max at baseline eq.
+eig_data{s}.flipped = []; % 1 if any param flip occurred, 0 otherwise
+eig_data{s}.n_flips = []; % total flips across all params for this trial
+end
+for s = 1:2
+fprintf('Running scenario: %s\n', scenarios(s).name);
+for p_idx = 1:n_params
+flips = 0;
+for t = 1:n_trials
+%% 1. Generate Baseline System
+N_start = 0.5 + rand(N_sp, 1);
+R_start = 0.5 + rand(R_res, 1);
+W = 0.5 + rand(R_res, 1);
+l = scenarios(s).l_low + ...
+(scenarios(s).l_high - scenarios(s).l_low) * rand(R_res, 1);
+C = rand(N_sp, R_res);
+D = rand(R_res, R_res);
+m = C * ((1 - l) .* W .* R_start);
+S = zeros(R_res, 1);
+for alpha = 1:R_res
+depletion = R_start(alpha) * sum(C(:, alpha) .* N_start);
+recycling = 0;
+for beta = 1:R_res
+w_ratio = W(beta) / W(alpha);
+recycling = recycling + l(beta) * w_ratio * ...
+D(alpha, beta) * R_start(beta) * sum(C(:, beta) .* N_start);
+end
+S(alpha) = depletion - recycling;
+end
+params = struct('W', W, 'l', l, 'C', C, 'D', D, 'm', m, 'S', S);
+%% 2. Solve Baseline Equilibrium
+x0 = [N_start; R_start];
+options = optimoptions('fsolve', 'Display', 'off', 'TolFun', 1e-10);
+[x_base, ~, exitflag_base] = fsolve(@(x) crm_dynamics(x, params), x0, options);
+if exitflag_base <= 0
+continue;
+end
+N_base = x_base(1:N_sp);
+R_base = x_base(N_sp+1:end);
+base_dominant = N_base > 1e-5;
+%% 3. Compute Jacobian and Eigenvalues at Baseline Equilibrium
+J = compute_jacobian(N_base, R_base, params);
+eigvals = eig(J);
+lambda_max = max(real(eigvals));
+%% 4. Apply Perturbation
+p_pert = params;
+switch p_idx
+case 1, p_pert.C(1,1) = p_pert.C(1,1) * (1 + delta);
+case 2, p_pert.C(1,2) = p_pert.C(1,2) * (1 + delta);
+case 3, p_pert.C(2,1) = p_pert.C(2,1) * (1 + delta);
+case 4, p_pert.C(2,2) = p_pert.C(2,2) * (1 + delta);
+case 5, p_pert.W(1) = p_pert.W(1) * (1 + delta);
+case 6, p_pert.W(2) = p_pert.W(2) * (1 + delta);
+case 7, p_pert.l(1) = p_pert.l(1) * (1 + delta);
+case 8, p_pert.l(2) = p_pert.l(2) * (1 + delta);
+case 9, p_pert.D(1,1) = p_pert.D(1,1) * (1 + delta);
+case 10, p_pert.D(1,2) = p_pert.D(1,2) * (1 + delta);
+case 11, p_pert.D(2,1) = p_pert.D(2,1) * (1 + delta);
+case 12, p_pert.D(2,2) = p_pert.D(2,2) * (1 + delta);
+case 13, p_pert.m(1) = p_pert.m(1) * (1 + delta);
+case 14, p_pert.m(2) = p_pert.m(2) * (1 + delta);
+case 15, p_pert.S(1) = p_pert.S(1) * (1 + delta);
+case 16, p_pert.S(2) = p_pert.S(2) * (1 + delta);
+end
+%% 5. Solve Perturbed System
+[x_new, ~, exitflag] = fsolve(@(x) crm_dynamics(x, p_pert), x0, options);
+if exitflag <= 0
+continue;
+end
+N_new = x_new(1:N_sp);
+pert_dominant = N_new > 1e-5;
+%% 6. Count Flips
+did_flip = any(base_dominant = pert_dominant);
+if did_flip
+flips = flips + 1;
+end
+%% 7. Store eigenvalue-flip pair (collected across all params)
+eig_data{s}.lambda_max(end+1) = lambda_max;
+eig_data{s}.flipped(end+1) = double(did_flip);
+end % trials
+all_flips(p_idx, s) = flips;
+end % params
+end % scenarios
+%% ── Results Output ────────────────────────────────────────────────────────
+fprintf('\n=== FLIPS OUT OF %d TRIALS ===\n\n', n_trials);
+fprintf('%-12s | %25s | %23s | %10s\n', ...
+'Parameter', scenarios(1).name, scenarios(2).name, 'Difference');
+fprintf('%s\n', repmat('-', 1, 76));
+for p_idx = 1:n_params
+diff = all_flips(p_idx,1) - all_flips(p_idx,2);
+if diff > 0, dir = '(High > Low)';
+elseif diff < 0, dir = '(Low > High)';
+else, dir = '';
+end
+fprintf('%-12s | %25d | %23d | %+6d %s\n', ...
+param_names{p_idx}, all_flips(p_idx,1), all_flips(p_idx,2), diff, dir);
+end
+fprintf('\nTotal trials per parameter: %d\n', n_trials);
+%% ── Eigenvalue Summary per Scenario ──────────────────────────────────────
+fprintf('\n=== EIGENVALUE STATISTICS AT BASELINE EQUILIBRIUM ===\n\n');
+for s = 1:2
+lam = eig_data{s}.lambda_max;
+fl = eig_data{s}.flipped;
+fprintf('Scenario: %s\n', scenarios(s).name);
+fprintf(' Mean λmax: %.4f\n', mean(lam));
+fprintf(' Median λmax: %.4f\n', median(lam));
+fprintf(' Std λmax: %.4f\n', std(lam));
+fprintf(' Range: [%.4f, %.4f]\n', min(lam), max(lam));
+fprintf(' Stable (λmax<0): %d/%d (%.1f%%)\n', ...
+sum(lam<0), length(lam), 100*mean(lam<0));
+fprintf(' Flip rate when λmax < 0: %.3f\n', mean(fl(lam < 0)));
+fprintf(' Flip rate when λmax ≈ 0: %.3f (|λmax|<0.1)\n', ...
+mean(fl(abs(lam) < 0.1)));
+fprintf(' Flip rate when λmax > 0: %.3f\n\n', mean(fl(lam > 0)));
+end
+%% ── Figure 1: Bar chart of flips ─────────────────────────────────────────
+figure('Name','Flips: High vs Low Leakage','Position',[100 100 1100 500]);
+x = 1:n_params;
+bw = 0.35;
+b1 = bar(x - bw/2, all_flips(:,1), bw, 'FaceColor', [0.20 0.40 0.68]);
+hold on;
+b2 = bar(x + bw/2, all_flips(:,2), bw, 'FaceColor', [0.89 0.30 0.29]);
+set(gca, 'XTick', x, 'XTickLabel', param_names, 'XTickLabelRotation', 45);
+ylabel('Number of Flips (out of 1000)');
+title('Dominance Flips per Parameter: High vs Low Leakage');
+legend([b1 b2], {scenarios(1).name, scenarios(2).name}, 'Location', 'northeast');
+grid on; box off; hold off;
+%% ── Figure 2: λmax distribution per scenario ─────────────────────────────
+figure('Name','Eigenvalue Distributions','Position',[100 620 900 420]);
+subplot(1,2,1);
+histogram(eig_data{1}.lambda_max, 40, 'FaceColor', [0.20 0.40 0.68], ...
+'FaceAlpha', 0.7, 'EdgeColor', 'none');
+xline(0, 'k--', 'LineWidth', 1.5);
+xlabel('\lambda_{max}'); ylabel('Count');
+title(sprintf('High leakage\nMean=%.3f', mean(eig_data{1}.lambda_max)));
+box off;
+subplot(1,2,2);
+histogram(eig_data{2}.lambda_max, 40, 'FaceColor', [0.89 0.30 0.29], ...
+'FaceAlpha', 0.7, 'EdgeColor', 'none');
+xline(0, 'k--', 'LineWidth', 1.5);
+xlabel('\lambda_{max}'); ylabel('Count');
+title(sprintf('Low leakage\nMean=%.3f', mean(eig_data{2}.lambda_max)));
+box off;
+sgtitle('\lambda_{max} at baseline equilibrium before perturbation', ...
+'FontSize', 12, 'FontWeight', 'bold');
+%% ── Figure 3: Flip rate vs λmax (binned scatter) ─────────────────────────
+figure('Name','Flip rate vs lambda_max','Position',[100 120 900 420]);
+cols = {[0.20 0.40 0.68], [0.89 0.30 0.29]};
+scen_names = {scenarios(1).name, scenarios(2).name};
+for s = 1:2
+subplot(1,2,s);
+lam = eig_data{s}.lambda_max;
+fl = eig_data{s}.flipped;
+% Build edges from actual data range
+lo = floor(min(lam)*10)/10 - 0.05;
+hi = ceil(max(lam)*10)/10 + 0.05;
+edges = linspace(lo, hi, 20);
+bw = edges(2) - edges(1);
+bin_centers = edges(1:end-1) + bw/2;
+[, ~, bin] = histcounts(lam, edges);
+flip_rates = nan(1, length(bin_centers));
+for b = 1:length(bin_centers)
+idx = bin == b;
+if sum(idx) >= 5
+flip_rates(b) = mean(fl(idx));
+end
+end
+bar(bin_centers, flip_rates, bw0.85, ...
+'FaceColor', cols{s}, 'FaceAlpha', 0.8, 'EdgeColor', 'none');
+hold on;
+xline(0, 'k--', 'LineWidth', 1.5, 'Label', '\lambda=0');
+hold off;
+xlabel('\lambda_{max} at baseline equilibrium');
+ylabel('Flip rate');
+title(scen_names{s});
+ylim([0 1]); box off;
+end
+sgtitle('Flip rate vs \lambda_{max}: does proximity to 0 predict sensitivity?', ...
+'FontSize', 11, 'FontWeight', 'bold');
+%% =========================================================================
+%% LOCAL FUNCTIONS
+%% =========================================================================
+function F = crm_dynamics(x, p)
+N = x(1:2);
+R = x(3:4);
+dN = N . (p.C * ((1 - p.l) .* p.W .* R) - p.m);
+dR = zeros(length(R), 1);
+for alpha = 1:length(R)
+depletion = R(alpha) * sum(p.C(:, alpha) .* N);
+recycling = 0;
+for beta = 1:length(R)
+w_ratio = p.W(beta) / p.W(alpha);
+recycling = recycling + p.l(beta) * w_ratio * ...
+p.D(alpha, beta) * R(beta) * sum(p.C(:, beta) .* N);
+end
+dR(alpha) = p.S(alpha) - depletion + recycling;
+end
+F = [dN; dR];
+end
+function J = compute_jacobian(N_star, R_star, p)
+% Compute the Jacobian of the CRM at the equilibrium point (N_star, R_star).
+% State vector order: [N1, N2, R1, R2]
+%
+% dNi/dt = Ni * [sum_a (1-l_a)C_iaW_aR_a - m_i]
+% dRa/dt = S_a - R_asum_i(C_iaNi)
+% + sum_{i,b} l_bC_ibD_ab(W_b/W_a)NiR_b
+N_sp = length(N_star);
+R_res = length(R_star);
+dim = N_sp + R_res;
+J = zeros(dim, dim);
+%% dNi/dNj (species-species block, top-left)
+% dNi/dNj = delta_ij * [sum_a (1-l_a)C_iaW_aR_star_a - m_i]
+% At equilibrium, the bracket = 0, so diagonal entries are 0.
+% Off-diagonal entries are also 0 (Ni does not appear in Nj equation).
+% → A block is all zeros (confirmed by formula)
+for i = 1:N_sp
+J(i, i) = sum((1 - p.l) . p.C(i,:)' .* p.W .* R_star) - p.m(i);
+% At true equilibrium this = 0; kept for near-equilibrium accuracy
+end
+%% dNi/dR_alpha (species-resource block, top-right)
+% dNi/dR_alpha = Ni_star * (1-l_alpha) * C_i_alpha * W_alpha
+for i = 1:N_sp
+for alpha = 1:R_res
+J(i, N_sp + alpha) = N_star(i) * (1 - p.l(alpha)) * ...
+p.C(i, alpha) * p.W(alpha);
+end
+end
+%% dR_alpha/dNi (resource-species block, bottom-left)
+% dR_alpha/dNi = -C_i_alpha * R_star_alpha
+% + sum_b l_b * C_i_b * D_alpha_b * (W_b/W_alpha) * R_star_b
+for alpha = 1:R_res
+for i = 1:N_sp
+direct = -p.C(i, alpha) * R_star(alpha);
+recycling = 0;
+for beta = 1:R_res
+recycling = recycling + p.l(beta) * p.C(i, beta) * ...
+p.D(alpha, beta) * (p.W(beta)/p.W(alpha)) * R_star(beta);
+end
+J(N_sp + alpha, i) = direct + recycling;
+end
+end
+%% dR_alpha/dR_beta (resource-resource block, bottom-right)
+% dR_alpha/dR_alpha = -sum_i C_i_alpha * N_star_i
+% + sum_i l_alpha * C_i_alpha * D_alpha_alpha * (W_alpha/W_alpha) * N_star_i
+% [beta=alpha diagonal term]
+% dR_alpha/dR_beta = sum_i l_beta * C_i_beta * D_alpha_beta * (W_beta/W_alpha) * N_star_i
+% [off-diagonal]
+for alpha = 1:R_res
+for beta = 1:R_res
+val = 0;
+for i = 1:N_sp
+val = val + p.l(beta) * p.C(i, beta) * p.D(alpha, beta) * ...
+(p.W(beta)/p.W(alpha)) * N_star(i);
+end
+if alpha == beta
+val = val - sum(p.C(:, alpha) .* N_star);
+end
+J(N_sp + alpha, N_sp + beta) = val;
+end
+end
+end
+
