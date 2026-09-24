@@ -1,0 +1,8 @@
+function r = corr_flat(A, B)
+% CORR_FLAT  Pearson correlation between two matrices, treating every
+% matched entry as one paired sample -- the same definition Liu et al.
+% use for their empirical correlation rho between G and C.
+    a = A(:); b = B(:);
+    a = a - mean(a); b = b - mean(b);
+    r = sum(a.*b) / sqrt(sum(a.^2)*sum(b.^2));
+end
