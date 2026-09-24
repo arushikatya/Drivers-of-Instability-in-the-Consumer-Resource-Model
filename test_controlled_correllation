@@ -1,0 +1,102 @@
+% test_controlled_correlation.m
+%
+% CONTROLLED-CORRELATION version of the G-vs-C_eff instability test.
+%
+% The earlier version (test_niche_encroachment.m) sampled all model
+% parameters, including the metabolic conversion matrix D, fully at
+% random, and only MEASURED rho = corr(G, C_eff) after the fact. That
+% meant we had no control over which rho values got explored, and
+% stable equilibria (needed to test the threshold) became vanishingly
+% rare as N_S and N_R grew -- exactly the same feasibility problem
+% discussed for why 2-species systems are much easier to find valid
+% equilibria for than large ones.
+%
+% This version fixes that by CONSTRUCTING each trial at a chosen,
+% controlled decorrelation level theta in [0,1] (see
+% run_trial_controlled.m and solve_D_for_target.m): we solve for the
+% D that makes the model's own recycling term push C_eff toward a
+% specified target, rather than hoping a random D happens to land
+% somewhere useful. Sweeping theta densely gives even, controlled
+% coverage of the rho axis at every community size, which is what
+% actually lets us compare the instability threshold across N_S, N_R.
+%
+% STEP-BY-STEP:
+%   1. For each (N_S, N_R) configuration, sweep theta over a fine
+%      grid from 0 (C_eff = C) to 1 (C_eff = pure noise).
+%   2. At each theta, run many trials (run_trial_controlled.m):
+%      sample c, w, l, R*, N*; solve for the D that targets the
+%      desired C_eff; build the real Jacobian with that D; check
+%      stability; measure the ACTUAL rho = corr(G, C_eff).
+%   3. Pool all (rho, stable) pairs across every theta for that
+%      configuration, bin by rho, and compute the fraction of
+%      trials that are unstable in each bin.
+%   4. Find the rho at which that fraction crosses 50% (linear
+%      interpolation between bins).
+%   5. Compare that empirical crossing point to the theoretically
+%      predicted threshold, sqrt(N_S/N_R), across configurations.
+
+clear; clc;
+rng(2026);
+
+configs = [2 8; 4 8; 6 8; 8 8; 4 16; 8 16; 12 16; 16 16];  % [N_S N_R]
+theta_grid = linspace(0, 1, 15);
+trials_per_theta = 150;   % raise for smoother/more reliable estimates
+
+bin_edges = linspace(-1, 1, 41);
+bin_centers = (bin_edges(1:end-1) + bin_edges(2:end)) / 2;
+
+fprintf('%-6s %-6s %-10s %-14s\n', 'N_S','N_R','predicted','empirical');
+fprintf('%-6s %-6s %-10s %-14s\n', '','','sqrt(NS/NR)','rho @ 50%% unstable');
+
+results = struct('NS',{},'NR',{},'predicted',{},'empirical',{});
+
+for k = 1:size(configs,1)
+    NS = configs(k,1);
+    NR = configs(k,2);
+    predicted = sqrt(NS/NR);
+
+    all_rho = [];
+    all_stable = [];
+
+    for th = theta_grid
+        for t = 1:trials_per_theta
+            [rho, stable] = run_trial_controlled(NS, NR, th);
+            all_rho(end+1)    = rho;    %#ok<AGROW>
+            all_stable(end+1) = stable; %#ok<AGROW>
+        end
+    end
+
+    frac_unstable = nan(size(bin_centers));
+    for b = 1:length(bin_centers)
+        mask = all_rho >= bin_edges(b) & all_rho < bin_edges(b+1);
+        if sum(mask) > 10
+            frac_unstable(b) = 1 - mean(all_stable(mask));
+        end
+    end
+
+    valid = ~isnan(frac_unstable);
+    empirical = find_crossing(bin_centers(valid), frac_unstable(valid), 0.5);
+
+    fprintf('%-6d %-6d %-10.3f %-14.3f\n', NS, NR, predicted, empirical);
+
+    results(k).NS = NS; results(k).NR = NR;
+    results(k).predicted = predicted; results(k).empirical = empirical;
+    results(k).bin_centers = bin_centers;
+    results(k).frac_unstable = frac_unstable;
+end
+
+save('controlled_correlation_results.mat', 'results');
+
+% Optional: plot predicted vs empirical threshold
+pred_vals = [results.predicted];
+emp_vals  = [results.empirical];
+figure;
+plot(pred_vals, emp_vals, 'o', 'MarkerSize', 8, 'MarkerFaceColor', [0.2 0.4 0.4]);
+hold on;
+lims = [min([pred_vals 0]), max(pred_vals)+0.1];
+plot(lims, lims, 'k--');
+xlabel('predicted threshold  \surd(N_S/N_R)');
+ylabel('empirical \rho at 50% unstable');
+title('Predicted vs. empirical instability threshold');
+grid on;
+saveas(gcf, 'threshold_comparison_controlled.png');
