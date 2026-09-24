@@ -1,0 +1,28 @@
+function D = solve_D_for_target(c, w, l, Rstar, Ceff_target)
+% SOLVE_D_FOR_TARGET  Given desired consumption rates c, energy values
+% w, leakage l, resource levels Rstar, and a DESIRED effective
+% consumption matrix Ceff_target, solve (via least squares) for the
+% metabolic conversion matrix D that makes the model's own recycling
+% term produce that target.
+%
+% Derivation:
+%   Ceff(i,alpha) = c(i,alpha) - T(alpha,i)/Rstar(alpha)
+%   T(alpha,i)    = sum_beta l_beta c(i,beta) D(alpha,beta) (w_beta/w_alpha) Rstar(beta)
+%                 = (D*M)(alpha,i) / w(alpha),  where M(beta,i) = l(beta)*w(beta)*c(i,beta)*Rstar(beta)
+%
+% So: T_target(alpha,i) = Rstar(alpha)*(c(i,alpha) - Ceff_target(i,alpha))
+%     D*M = w' .* T_target   (row-scale by w_alpha)
+%     D   = (w' .* T_target) * pinv(M)
+%
+% pinv gives the least-squares / minimum-norm solution, so this works
+% for any N_S, N_R (not just the exactly-solvable square case), and
+% the caller should check how close the ACTUAL resulting Ceff (via
+% G_and_Ceff.m with this D) ends up to the target -- it may not match
+% exactly, especially after D is clipped to be non-negative.
+
+    T_target = Rstar .* (c' - Ceff_target');   % (NR x NS)
+    weighted = c .* (l.*w.*Rstar');            % (NS x NR), same construction as in build_jacobian.m
+    M = weighted';                             % (NR x NS)
+    RHS = w' .* T_target;                      % (NR x NS)
+    D = RHS * pinv(M);                         % (NR x NR)
+end
