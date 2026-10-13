@@ -98,7 +98,7 @@ for li = 1:length(leakage_grid)
                 dep = Rref(a)*sum(C(:,a))*0.5;
                 rec = 0;
                 for b = 1:R_res
-                    rec = rec + l(b)*D(a,b)*(W(b)/W(a))*C(a,b)*Rref(b)*sum(C(:,b))*0.5;
+                    rec = rec + l(b)*D(a,b)*(W(b)/W(a))*Rref(b)*sum(C(:,b))*0.5;
                 end
                 S(a) = max(dep-rec, 0.05);
             end
