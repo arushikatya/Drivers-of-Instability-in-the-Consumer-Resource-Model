@@ -27,20 +27,27 @@
 %      infeasible somewhere along the path.
 %   5. Report, across many communities and several community sizes N,
 %      what fraction show this guaranteed (and confirmed) crossing.
+%   6. For every confirmed crossing, locate WHERE along the leakage axis
+%      N* first becomes infeasible: the first scan point at which some
+%      component of N* is <= 0 is refined by bisection to find the
+%      leakage value l_cross at which min(N*) = 0 (accurate to ~1e-6).
+%      The distribution of l_cross is then summarised for each N.
 
 clear; clc;
 rng(2028);
+warning('off','MATLAB:nearlySingularMatrix');   % singular solves are detected and flagged explicitly below
+rc_tol = 1e-10;   % if rcond(B) falls below this at any evaluation, the community is flagged
 
 N_list = [2, 3, 4];
 n_target = 150;          % feasible-at-baseline communities per N
-max_attempts = 8000;
+max_attempts = 1000000;  % cap on random draws per N (loop stops as soon as n_target feasible baselines are found)
 l_lo = 0.001;             % near-zero leakage
 l_hi = 0.999;             % near-maximal leakage
 theta_scan = linspace(0.001, 0.999, 200);  % fine sweep to confirm crossings
 
-fprintf('%-6s %-10s %-14s %-16s\n', 'N', 'n_checked', 'sign_disagree', 'crossing_confirmed');
+fprintf('%-6s %-10s %-14s %-18s %-10s\n', 'N', 'n_checked', 'sign_disagree', 'crossing_confirmed', 'n_draws');
 
-results = struct('N',{},'n_checked',{},'n_disagree',{},'n_confirmed',{});
+results = struct('N',{},'n_checked',{},'n_disagree',{},'n_confirmed',{},'n_draws',{});
 
 for kk = 1:length(N_list)
     N = N_list(kk);
@@ -49,6 +56,9 @@ for kk = 1:length(N_list)
     n_disagree = 0;
     n_confirmed = 0;
     attempts = 0;
+    l_cross_all = [];     % leakage at which N* first goes infeasible, one entry per confirmed crossing
+    which_sp_all = [];    % index of the species whose abundance hits zero first
+    flag_all = false(0,1); % true if B was nearly singular during that community's scan/bisection
 
     while n_checked < n_target && attempts < max_attempts
         attempts = attempts + 1;
@@ -89,34 +99,119 @@ for kk = 1:length(N_list)
 
             % STEP 4: confirm an actual crossing occurs along the path
             crossed = false;
+            l_prev = theta_scan(1);
+            l_cross = NaN;
+            which_sp = NaN;
+            flag = false;
             for th = theta_scan
                 l = th*ones(1,N);
                 try
                     Rt = Rstar_of_l(c, w, l, m);
-                    Nt = Nstar_of_l(c, w, l, D, Rt, kappa);
+                    [Nt, rct] = Nstar_of_l(c, w, l, D, Rt, kappa);
+                    if rct < rc_tol, flag = true; end
                 catch
                     crossed = true;
+                    flag = true;
+                    l_cross = th;      % solver failure: report the grid point
                     break;
                 end
                 if any(Nt <= 0)
                     crossed = true;
+                    % Refine: bisection between the last feasible grid
+                    % point (l_prev) and this infeasible one (th) on
+                    % min(N*) = 0. N*(l) is continuous, so this
+                    % converges to the first zero crossing in the bracket.
+                    a = l_prev; b = th;
+                    for it = 1:40
+                        mid = 0.5*(a+b);
+                        lm = mid*ones(1,N);
+                        try
+                            Rm = Rstar_of_l(c, w, lm, m);
+                            [Nm, rcm] = Nstar_of_l(c, w, lm, D, Rm, kappa);
+                            if rcm < rc_tol, flag = true; end
+                            feas = all(Nm > 0);
+                        catch
+                            feas = false;
+                        end
+                        if feas, a = mid; else, b = mid; end
+                    end
+                    l_cross = b;
+                    lb = l_cross*ones(1,N);
+                    try
+                        Rb = Rstar_of_l(c, w, lb, m);
+                        [Nb, rcb] = Nstar_of_l(c, w, lb, D, Rb, kappa);
+                        if rcb < rc_tol, flag = true; end
+                        [~, which_sp] = min(Nb);
+                    catch
+                    end
                     break;
                 end
+                l_prev = th;
             end
             if crossed
                 n_confirmed = n_confirmed + 1;
+                l_cross_all(end+1,1) = l_cross;      %#ok<SAGROW>
+                which_sp_all(end+1,1) = which_sp;    %#ok<SAGROW>
+                flag_all(end+1,1) = flag;            %#ok<SAGROW>
             end
         end
     end
 
-    fprintf('%-6d %-10d %-14d %-16d\n', N, n_checked, n_disagree, n_confirmed);
+    fprintf('%-6d %-10d %-14d %-18d %-10d\n', N, n_checked, n_disagree, n_confirmed, attempts);
+    if n_checked < n_target
+        fprintf('       WARNING: only %d of %d target feasible baselines found within %d draws\n', n_checked, n_target, max_attempts);
+    end
     fprintf('       -> sign disagreement in %.1f%% of communities; crossing confirmed in %.1f%% of those\n', ...
         100*n_disagree/max(n_checked,1), 100*n_confirmed/max(n_disagree,1));
+
+    % ---- WHERE does N* first go infeasible? ----
+    lc = l_cross_all(~isnan(l_cross_all));
+    if ~isempty(lc)
+        q = prctile_simple(lc, [25 50 75]);
+        fprintf('       first-infeasibility leakage l_cross (n=%d): min %.3f | 25%% %.3f | median %.3f | 75%% %.3f | max %.3f\n', ...
+            numel(lc), min(lc), q(1), q(2), q(3), max(lc));
+        nf = sum(flag_all);
+        fprintf('       communities flagged for near-singular B (rcond < %.0e): %d\n', rc_tol, nf);
+        if nf > 0
+            lc2 = l_cross_all(~flag_all);
+            q2 = prctile_simple(lc2, [25 50 75]);
+            fprintf('       l_cross EXCLUDING flagged (n=%d): 25%% %.3f | median %.3f | 75%% %.3f\n', numel(lc2), q2(1), q2(2), q2(3));
+        end
+        fprintf('       share of ALL feasible-baseline communities that lose feasibility by l = 0.3: %.1f%%, 0.5: %.1f%%, 0.7: %.1f%%, 0.9: %.1f%%\n', ...
+            100*sum(lc<=0.3)/n_checked, 100*sum(lc<=0.5)/n_checked, ...
+            100*sum(lc<=0.7)/n_checked, 100*sum(lc<=0.9)/n_checked);
+    end
 
     results(kk).N = N;
     results(kk).n_checked = n_checked;
     results(kk).n_disagree = n_disagree;
     results(kk).n_confirmed = n_confirmed;
+    results(kk).n_draws = attempts;
+    results(kk).l_cross = l_cross_all;
+    results(kk).first_species = which_sp_all;
+    results(kk).flagged = flag_all;
 end
 
+% ---- Figure: distribution of the leakage at which feasibility is first lost ----
+figure('Position',[100 100 900 300]);
+for kk = 1:length(results)
+    subplot(1,length(results),kk);
+    histogram(results(kk).l_cross, 0:0.05:1);
+    xlabel('Leakage l at which N^* first goes infeasible');
+    ylabel('Number of communities');
+    title(sprintf('N = %d', results(kk).N));
+    xlim([0 1]);
+end
+saveas(gcf, 'leakage_first_infeasibility.png');
+
 save('leakage_infeasibility_results.mat', 'results');
+
+
+function q = prctile_simple(x, p)
+% Percentiles by linear interpolation (avoids needing the Statistics Toolbox)
+    x = sort(x(:));
+    n = numel(x);
+    pos = 1 + (n-1)*p(:)'/100;
+    lo = floor(pos); hi = ceil(pos);
+    q = x(lo)' .* (1-(pos-lo)) + x(hi)' .* (pos-lo);
+end
